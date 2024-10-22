@@ -5,6 +5,15 @@ const secretKey = process.env.JWT_SECRET_KEY; // Use a secure secret key
 
 
 // OAuth 2 Callback
+/**
+ * This function handles the OAuth 2 callback from GitHub after a user has
+ * authorized the application. It exchanges the authorization code for an
+ * access token and uses the access token to fetch the user's details from
+ * GitHub. If the user does not exist in the database, a new entry is created.
+ * A JSON Web Token (JWT) is generated and returned to the client.
+ * @param {Object} req - The request object
+ * @param {Object} res - The response object
+ */
 exports.githubOAuthCallback = async (req, res) => {
   const code = req.query.code;
 
@@ -46,7 +55,7 @@ exports.githubOAuthCallback = async (req, res) => {
     }
 
     // Generate a JWT token
-    const token = jwt.sign({ githubUserId: id, username: login }, secretKey, {
+    const token = jwt.sign({ githubUserId: id, username: login, accessToken: access_token }, secretKey, {
       expiresIn: '24h' // Token expiration (24 hour)
     });
 
@@ -59,17 +68,31 @@ exports.githubOAuthCallback = async (req, res) => {
 };
 
 // Remove integration
+/**
+ * This function removes the integration between the user and GitHub.
+ * It deletes the corresponding document from the database.
+ * @param {Object} req - The request object
+ * @param {Object} res - The response object
+ */
 exports.removeIntegration = async (req, res) => {
   try {
+    // Delete the document from the database
     await GitHubIntegration.deleteOne({ githubUserId: req.userId });
+    // Return a success message
     res.status(200).json({msg: "disconnected successfully"});
   } catch (err) {
+    // Return an error message
     res.status(200).json({msg:'Error removing integration'});
   }
 };
 
+/**
+ * Check the GitHub connection status for an authenticated user
+ * @param {Object} req - The request object
+ * @param {Object} res - The response object
+ */
 exports.githubStatus = async (req, res) => {
-  const userId = req.userId
+  const userId = req.userId;
 
   try {
     // Check if user is connected (exists in the DB)
@@ -77,6 +100,14 @@ exports.githubStatus = async (req, res) => {
 
     if (userIntegration) {
       // User is connected to GitHub
+      /**
+       * Response format:
+       * {
+       *   connected: true,
+       *   username: string,
+       *   connectedAt: Date
+       * }
+       */
       return res.status(200).json({
         connected: true,
         username: userIntegration.username,
@@ -84,10 +115,191 @@ exports.githubStatus = async (req, res) => {
       });
     } else {
       // User is not connected
+      /**
+       * Response format:
+       * { connected: false }
+       */
       return res.status(200).json({ connected: false });
     }
   } catch (error) {
     console.error('Error checking GitHub connection status:', error);
     return res.status(500).json({ error: 'Internal Server Error' });
   }
+};
+
+
+// Fetch all organizations for authenticated user
+/**
+ * Fetches all organizations associated with the authenticated user
+ * @param {Object} req - The request object
+ * @param {Object} res - The response object
+ */
+exports.fetchGithubOrganizations = async (req, res) => {
+  try {
+    // Import the Octokit module
+    const { Octokit } = await import('@octokit/rest');
+
+    // Check if access token is present
+    if (!req.accessToken) {
+      return res.status(404).json({ error: 'Not Found' });
+    }
+
+    // Initialize Octokit with the access token
+    const octokit = new Octokit({ auth: req.accessToken });
+
+    // Request organizations data from GitHub API
+    const { data: organizations } = await octokit.request('/user/orgs');
+
+
+    // Return the organizations data
+    res.status(200).json([...organizations]);
+  } catch (error) {
+    // Handle errors when fetching organizations
+    res.status(500).json({ error: 'Failed to fetch organizations' });
+  }
+};
+
+/**
+ * Fetch repositories for an organization
+ * @param {Object} req - The request object
+ * @param {Object} res - The response object
+ */
+exports.fetchRepoOrganizationsByOrg = async (req, res) => {
+  const org = req.params.org;
+
+  // Import the Octokit module
+  const { Octokit } = await import('@octokit/rest');
+
+  // Check if access token is present
+  if (!req.accessToken) {
+    return res.status(404).json({ error: 'Not Found' });
+  }
+
+  // Initialize Octokit with the access token
+  const octokit = new Octokit({ auth: req.accessToken });
+
+  try {
+    // Request repositories data from GitHub API
+    const { data: repos } = await octokit.request(`/orgs/${org}/repos`);
+    res.status(200).json(repos);
+  } catch (error) {
+    // Handle errors when fetching repositories
+    res.status(500).json({ error: 'Failed to fetch repositories' });
+  }
+};
+
+// Fetch repository data (Commits, Pull Requests, Issues)
+// This endpoint takes an `owner` and `repo` parameter and returns the data
+// for the specified repository.
+/**
+ * @param {Object} req - The request object
+ * @param {Object} res - The response object
+ */
+exports.fetchRepoDataByOwnerRepo = async (req, res) => {
+  const { owner, repo } = req.params;
+
+  // Import the Octokit module
+  const { Octokit } = await import('@octokit/rest');
+
+  // Check if access token is present
+  if (!req.accessToken) {
+    return res.status(404).json({ error: 'Not Found' });
+  }
+
+  // Initialize Octokit with the access token
+  const octokit = new Octokit({ auth: req.accessToken });
+
+  try {
+    // Request commits data from GitHub API
+    const { data: commits } = await octokit.request(`/repos/${owner}/${repo}/commits`);
+    // Request pull requests data from GitHub API
+    const { data: pullRequests } = await octokit.request(`/repos/${owner}/${repo}/pulls`);
+    // Request issues data from GitHub API
+    const { data: issues } = await octokit.request(`/repos/${owner}/${repo}/issues`);
+    // Return the repository data
+    res.status(200).json({ commits, pullRequests, issues });
+  } catch (error) {
+    // Handle errors when fetching repository data
+    res.status(500).json({ error: 'Failed to fetch repository data' });
+  }
+};
+
+
+// Helper function to fetch all paginated data
+async function fetchAllData(octokit, url, params) {
+  return await octokit.paginate(url, params);
+}
+
+/**
+ * Fetches and processes organization statistics based on the provided organization IDs.
+ * Accumulates data on user commits, pull requests, and issues.
+ * @param {Object} req - The request object
+ * @param {Object} res - The response object
+ */
+exports.organizationStats = async (req, res) => {
+    const { orgIds } = req.body;
+
+    try {
+        const userStatsMap = {}; // To accumulate stats by user
+
+        // Iterate through all organization IDs
+        for (const orgId of orgIds) {
+            // Fetch repositories for the organization
+            const repos = await fetchAllData(req.octokit, 'GET /orgs/{org}/repos', {
+                org: orgId,
+                per_page: 100
+            });
+
+            // Fetch data for each repository (commits, PRs, issues)
+            for (const repo of repos) {
+                const [commits, pullRequests, issues] = await Promise.all([
+                    fetchAllData(req.octokit, 'GET /repos/{org}/{repo}/commits', { org: orgId, repo: repo.name, per_page: 100 }),
+                    fetchAllData(req.octokit, 'GET /repos/{org}/{repo}/pulls', { org: orgId, repo: repo.name, state: 'all', per_page: 100 }),
+                    fetchAllData(req.octokit, 'GET /repos/{org}/{repo}/issues', { org: orgId, repo: repo.name, state: 'closed', per_page: 100 })
+                ]);
+
+                // Process commits
+                commits.forEach(commit => {
+                    const user = commit.author ? commit.author.login : 'unknown';
+                    const userId = commit.author ? commit.author.id : '-';
+                    if (!userStatsMap[user]) {
+                        userStatsMap[user] = { userId, totalCommits: 0, totalPRs: 0, totalIssues: 0 };
+                    }
+                    userStatsMap[user].totalCommits += 1;
+                });
+
+                // Process pull requests
+                pullRequests.forEach(pr => {
+                    const user = pr.user.login;
+                    if (!userStatsMap[user]) {
+                        userStatsMap[user] = { totalCommits: 0, totalPRs: 0, totalIssues: 0 };
+                    }
+                    userStatsMap[user].totalPRs += 1;
+                });
+
+                // Process issues
+                issues.forEach(issue => {
+                    const user = issue.user.login;
+                    if (!userStatsMap[user]) {
+                        userStatsMap[user] = { totalCommits: 0, totalPRs: 0, totalIssues: 0 };
+                    }
+                    userStatsMap[user].totalIssues += 1;
+                });
+            }
+        }
+
+        const transformedData = Object.keys(userStatsMap).map(user => ({
+            user,
+            userId: userStatsMap[user].userId,
+            totalCommits: userStatsMap[user].totalCommits,
+            totalPRs: userStatsMap[user].totalPRs,
+            totalIssues: userStatsMap[user].totalIssues
+        }));
+
+        // Send accumulated stats to the frontend
+        res.json(transformedData);
+    } catch (error) {
+        console.error('Error fetching org stats:', error);
+        res.status(500).json({ error: 'Failed to fetch organization stats' });
+    }
 };

@@ -29,7 +29,7 @@ app.get('/login', (req, res)=>{
   return res.redirect(`https://github.com/login/oauth/authorize?client_id=${ process.env.GITHUB_CLIENT_ID}&scope=repo,user`);
 });
 
-const PORT = 3000;
+const PORT = process.env.PORT ||3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
