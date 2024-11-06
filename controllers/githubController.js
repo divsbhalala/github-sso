@@ -4,6 +4,18 @@ const jwt = require('jsonwebtoken');
 const secretKey = process.env.JWT_SECRET_KEY; // Use a secure secret key
 
 
+
+// Helper function to initialize Octokit with a token
+const initializeOctokit = async (token) => {
+  const { Octokit } = await import('@octokit/rest');
+  new Octokit({ auth: token });
+}
+
+// Helper function for error handling
+const handleError = (res, message, error = null) => {
+  console.error(message, error);
+  return res.status(500).json({ error: message });
+};
 // OAuth 2 Callback
 /**
  * This function handles the OAuth 2 callback from GitHub after a user has
@@ -137,7 +149,6 @@ exports.githubStatus = async (req, res) => {
 exports.fetchGithubOrganizations = async (req, res) => {
   try {
     // Import the Octokit module
-    const { Octokit } = await import('@octokit/rest');
 
     // Check if access token is present
     if (!req.accessToken) {
@@ -145,7 +156,7 @@ exports.fetchGithubOrganizations = async (req, res) => {
     }
 
     // Initialize Octokit with the access token
-    const octokit = new Octokit({ auth: req.accessToken });
+    const octokit = await initializeOctokit(req.accessToken);
 
     // Request organizations data from GitHub API
     const { data: organizations } = await octokit.request('/user/orgs');
@@ -167,16 +178,13 @@ exports.fetchGithubOrganizations = async (req, res) => {
 exports.fetchRepoOrganizationsByOrg = async (req, res) => {
   const org = req.params.org;
 
-  // Import the Octokit module
-  const { Octokit } = await import('@octokit/rest');
-
   // Check if access token is present
   if (!req.accessToken) {
     return res.status(404).json({ error: 'Not Found' });
   }
 
   // Initialize Octokit with the access token
-  const octokit = new Octokit({ auth: req.accessToken });
+  const octokit = await initializeOctokit(req.accessToken);
 
   try {
     // Request repositories data from GitHub API
@@ -198,16 +206,13 @@ exports.fetchRepoOrganizationsByOrg = async (req, res) => {
 exports.fetchRepoDataByOwnerRepo = async (req, res) => {
   const { owner, repo } = req.params;
 
-  // Import the Octokit module
-  const { Octokit } = await import('@octokit/rest');
-
   // Check if access token is present
   if (!req.accessToken) {
     return res.status(404).json({ error: 'Not Found' });
   }
 
   // Initialize Octokit with the access token
-  const octokit = new Octokit({ auth: req.accessToken });
+  const octokit = await initializeOctokit(req.accessToken);
 
   try {
     // Request commits data from GitHub API
@@ -255,7 +260,7 @@ exports.organizationStats = async (req, res) => {
                 const [commits, pullRequests, issues] = await Promise.all([
                     fetchAllData(req.octokit, 'GET /repos/{org}/{repo}/commits', { org: orgId, repo: repo.name, per_page: 100 }),
                     fetchAllData(req.octokit, 'GET /repos/{org}/{repo}/pulls', { org: orgId, repo: repo.name, state: 'all', per_page: 100 }),
-                    fetchAllData(req.octokit, 'GET /repos/{org}/{repo}/issues', { org: orgId, repo: repo.name, state: 'closed', per_page: 100 })
+                    fetchAllData(req.octokit, 'GET /repos/{org}/{repo}/issues', { org: orgId, repo: repo.name, state: 'all', per_page: 100 })
                 ]);
 
                 // Process commits
@@ -266,6 +271,7 @@ exports.organizationStats = async (req, res) => {
                         userStatsMap[user] = { userId, totalCommits: 0, totalPRs: 0, totalIssues: 0 };
                     }
                     userStatsMap[user].totalCommits += 1;
+                  userStatsMap[user].changelog = 0;
                 });
 
                 // Process pull requests
@@ -275,6 +281,7 @@ exports.organizationStats = async (req, res) => {
                         userStatsMap[user] = { totalCommits: 0, totalPRs: 0, totalIssues: 0 };
                     }
                     userStatsMap[user].totalPRs += 1;
+                  userStatsMap[user].changelog = 0;
                 });
 
                 // Process issues
@@ -284,7 +291,24 @@ exports.organizationStats = async (req, res) => {
                         userStatsMap[user] = { totalCommits: 0, totalPRs: 0, totalIssues: 0 };
                     }
                     userStatsMap[user].totalIssues += 1;
+                  userStatsMap[user].changelog = 0;
                 });
+
+              // Fetch changelogs for each issue (e.g., timeline events like comments, status changes, etc.)
+              const changelogs = await Promise.all(
+                  issues.map(async (issue) => {
+                    const [changelog] = await Promise.all([
+                      fetchAllData(req.octokit, "GET /repos/{org}/{repo}/issues/{issue_number}/events", {
+                        org: orgId,
+                        repo: repo.name,
+                        issue_number: issue.number
+                      })
+                    ]);
+                    const user = issue.user.login;
+                    userStatsMap[user].changelog += changelog.length;
+                    return changelog;
+                  })
+              );
             }
         }
 
@@ -293,7 +317,8 @@ exports.organizationStats = async (req, res) => {
             userId: userStatsMap[user].userId,
             totalCommits: userStatsMap[user].totalCommits,
             totalPRs: userStatsMap[user].totalPRs,
-            totalIssues: userStatsMap[user].totalIssues
+            totalIssues: userStatsMap[user].totalIssues,
+            changelogs: userStatsMap[user].changelog,
         }));
 
         // Send accumulated stats to the frontend
