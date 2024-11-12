@@ -8,7 +8,7 @@ const secretKey = process.env.JWT_SECRET_KEY; // Use a secure secret key
 // Helper function to initialize Octokit with a token
 const initializeOctokit = async (token) => {
   const { Octokit } = await import('@octokit/rest');
-  new Octokit({ auth: token });
+  return new Octokit({ auth: token });
 }
 
 // Helper function for error handling
@@ -235,6 +235,97 @@ async function fetchAllData(octokit, url, params) {
   return await octokit.paginate(url, params);
 }
 
+
+async function fetchCommit(octokit, orgId, repoName, userStatsMap={}){
+  try {
+    const commits = await fetchAllData(octokit, 'GET /repos/{org}/{repo}/commits', { org: orgId, repo: repoName, per_page: 100 });
+    // Process commits
+    commits.forEach(commit => {
+      const user = commit.author ? commit.author.login : 'unknown';
+      const userId = commit.author ? commit.author.id : '-';
+      if (!userStatsMap[user]) {
+        userStatsMap[user] = { userId, totalCommits: 0, totalPRs: 0, totalIssues: 0 };
+      }
+      userStatsMap[user].totalCommits += 1;
+      userStatsMap[user].changelog = 0;
+    });
+
+    return userStatsMap;
+  } catch (e) {
+    console.error('Error fetching org commit:', e);
+    throw new Error(e)
+  }
+}
+
+
+async function fetchPullRequest(octokit, orgId, repoName, userStatsMap={}){
+  try {
+    const pullRequests = await fetchAllData(octokit, 'GET /repos/{org}/{repo}/pulls', { org: orgId, repo: repoName, state: 'all', per_page: 100 });
+
+    // Process pull requests
+    pullRequests.forEach(pr => {
+      const user = pr.user.login;
+      if (!userStatsMap[user]) {
+        userStatsMap[user] = { totalCommits: 0, totalPRs: 0, totalIssues: 0 };
+      }
+      userStatsMap[user].totalPRs += 1;
+      userStatsMap[user].changelog = 0;
+    });
+
+    return userStatsMap;
+  } catch (e) {
+    console.error('Error fetching org pull request:', e);
+    throw new Error(e)
+  }
+}
+
+
+async function fetchIssues(octokit, orgId, repoName, userStatsMap={}){
+  try {
+    const issues = await fetchAllData(octokit, 'GET /repos/{org}/{repo}/issues', { org: orgId, repo: repoName, state: 'all', per_page: 100 });
+
+    // Process issues
+    issues.forEach(issue => {
+      const user = issue.user.login;
+      if (!userStatsMap[user]) {
+        userStatsMap[user] = { totalCommits: 0, totalPRs: 0, totalIssues: 0 };
+      }
+      userStatsMap[user].totalIssues += 1;
+      userStatsMap[user].changelog = 0;
+    });
+
+    await fetchAllChangeLogs(octokit, orgId, repoName, issues, userStatsMap)
+
+    return userStatsMaps;
+  } catch (e) {
+    console.error('Error fetching org issue:', e);
+    throw new Error(e)
+  }
+}
+
+async function fetchAllChangeLogs(octokit, orgId, repoName, issues=[], userStatsMap={}){
+  try {
+    await Promise.all(
+        issues.map(async (issue) => {
+          const [changelog] = await Promise.all([
+            fetchAllData(octokit, "GET /repos/{org}/{repo}/issues/{issue_number}/events", {
+              org: orgId,
+              repo: repoName,
+              issue_number: issue.number
+            })
+          ]);
+          const user = issue.user.login;
+          userStatsMap[user].changelog += changelog.length;
+          return changelog;
+        })
+    );
+
+  } catch (e) {
+    console.error('Error fetching org issues change logs:', e);
+    throw new Error(e)
+  }
+}
+
 /**
  * Fetches and processes organization statistics based on the provided organization IDs.
  * Accumulates data on user commits, pull requests, and issues.
@@ -245,7 +336,7 @@ exports.organizationStats = async (req, res) => {
     const { orgIds } = req.body;
 
     try {
-        const userStatsMap = {}; // To accumulate stats by user
+        let userStatsMap = {}; // To accumulate stats by user
 
         // Iterate through all organization IDs
         for (const orgId of orgIds) {
@@ -257,58 +348,11 @@ exports.organizationStats = async (req, res) => {
 
             // Fetch data for each repository (commits, PRs, issues)
             for (const repo of repos) {
-                const [commits, pullRequests, issues] = await Promise.all([
-                    fetchAllData(req.octokit, 'GET /repos/{org}/{repo}/commits', { org: orgId, repo: repo.name, per_page: 100 }),
-                    fetchAllData(req.octokit, 'GET /repos/{org}/{repo}/pulls', { org: orgId, repo: repo.name, state: 'all', per_page: 100 }),
-                    fetchAllData(req.octokit, 'GET /repos/{org}/{repo}/issues', { org: orgId, repo: repo.name, state: 'all', per_page: 100 })
-                ]);
 
-                // Process commits
-                commits.forEach(commit => {
-                    const user = commit.author ? commit.author.login : 'unknown';
-                    const userId = commit.author ? commit.author.id : '-';
-                    if (!userStatsMap[user]) {
-                        userStatsMap[user] = { userId, totalCommits: 0, totalPRs: 0, totalIssues: 0 };
-                    }
-                    userStatsMap[user].totalCommits += 1;
-                  userStatsMap[user].changelog = 0;
-                });
+              userStatsMap = await fetchCommit(req.octokit, orgId, repo.name, userStatsMap);
+              userStatsMap= await fetchPullRequest(req.octokit, orgId, repo.name, userStatsMap);
+              userStatsMap= await fetchIssues(req.octokit, orgId, repo.name, userStatsMap);
 
-                // Process pull requests
-                pullRequests.forEach(pr => {
-                    const user = pr.user.login;
-                    if (!userStatsMap[user]) {
-                        userStatsMap[user] = { totalCommits: 0, totalPRs: 0, totalIssues: 0 };
-                    }
-                    userStatsMap[user].totalPRs += 1;
-                  userStatsMap[user].changelog = 0;
-                });
-
-                // Process issues
-                issues.forEach(issue => {
-                    const user = issue.user.login;
-                    if (!userStatsMap[user]) {
-                        userStatsMap[user] = { totalCommits: 0, totalPRs: 0, totalIssues: 0 };
-                    }
-                    userStatsMap[user].totalIssues += 1;
-                  userStatsMap[user].changelog = 0;
-                });
-
-              // Fetch changelogs for each issue (e.g., timeline events like comments, status changes, etc.)
-              const changelogs = await Promise.all(
-                  issues.map(async (issue) => {
-                    const [changelog] = await Promise.all([
-                      fetchAllData(req.octokit, "GET /repos/{org}/{repo}/issues/{issue_number}/events", {
-                        org: orgId,
-                        repo: repo.name,
-                        issue_number: issue.number
-                      })
-                    ]);
-                    const user = issue.user.login;
-                    userStatsMap[user].changelog += changelog.length;
-                    return changelog;
-                  })
-              );
             }
         }
 
