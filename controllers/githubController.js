@@ -296,7 +296,7 @@ async function fetchIssues(octokit, orgId, repoName, userStatsMap={}){
 
     await fetchAllChangeLogs(octokit, orgId, repoName, issues, userStatsMap)
 
-    return userStatsMaps;
+    return userStatsMap;
   } catch (e) {
     console.error('Error fetching org issue:', e);
     throw new Error(e)
