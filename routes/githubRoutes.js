@@ -10,6 +10,9 @@ router.get('/organizations', verifyToken, githubRoutes.fetchGithubOrganizations)
 router.get('/repos/:org', verifyToken, githubRoutes.fetchRepoOrganizationsByOrg);
 router.get('/repo-data/:owner/:repo', verifyToken, githubRoutes.fetchRepoDataByOwnerRepo);
 router.post('/orgs-stats', verifyToken, githubRoutes.organizationStats);
+router.get('/commit', verifyToken, githubRoutes.getCommitList);
+router.get('/pull-request', verifyToken, githubRoutes.getPullRequestList);
+router.get('/issue', verifyToken, githubRoutes.getIssueList);
 
 // Remove GitHub integration
 router.delete('/disconnect', verifyToken, githubRoutes.removeIntegration);

@@ -14,6 +14,7 @@ app.use(bodyParser.json());
 const URL = process.env.MONGO_URI
 // MongoDB Connection
 mongoose.connect(URL, {
+  dbName: 'SSO-GITHUB',
   useNewUrlParser: true,
   useUnifiedTopology: true
 }).then(() => console.log('MongoDB connected'))
